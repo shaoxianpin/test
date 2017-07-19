@@ -1,0 +1,2303 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="850" onload="init(evt)" viewBox="0 0 1200 850" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+				return a - b;
+			if (a < b || a > b)
+				return a - b;
+			return matches[b] - matches[a];
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="850.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="833" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="833" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (2 samples, 0.11%)</title><rect x="1135.7" y="337" width="1.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_virtual (1,637 samples, 88.68%)</title><rect x="93.7" y="673" width="1046.4" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >JavaCalls::call_virtual</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::IWait (2 samples, 0.11%)</title><rect x="12.6" y="545" width="1.2" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__lll_lock_wait (1 samples, 0.05%)</title><rect x="1143.3" y="625" width="0.7" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1,625 samples, 88.03%)</title><rect x="94.4" y="545" width="1038.7" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text text-anchor="" x="97.38" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__sys_trace_return</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (2 samples, 0.11%)</title><rect x="1135.7" y="385" width="1.2" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="1136.3" y="113" width="0.6" height="15.0" fill="rgb(206,58,58)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="1135.0" y="369" width="0.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (2 samples, 0.11%)</title><rect x="1142.1" y="593" width="1.2" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (2 samples, 0.11%)</title><rect x="1135.7" y="321" width="1.2" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="92.5" y="561" width="0.6" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text text-anchor="" x="95.46" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (5 samples, 0.27%)</title><rect x="22.8" y="529" width="3.2" height="15.0" fill="rgb(228,90,90)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_stub (5 samples, 0.27%)</title><rect x="10.6" y="673" width="3.2" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (8 samples, 0.43%)</title><rect x="17.7" y="609" width="5.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="10.0" y="673" width="0.6" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="1147.2" y="545" width="0.6" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="10.0" y="769" width="0.6" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="779.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="561" width="0.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_timeout (1 samples, 0.05%)</title><rect x="26.0" y="449" width="0.6" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::compile_method (3 samples, 0.16%)</title><rect x="15.1" y="625" width="1.9" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1135.7" y="305" width="0.6" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (8 samples, 0.43%)</title><rect x="17.7" y="497" width="5.1" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCallWrapper::JavaCallWrapper (1 samples, 0.05%)</title><rect x="1134.4" y="465" width="0.6" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::unpark (1 samples, 0.05%)</title><rect x="92.5" y="625" width="0.6" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text text-anchor="" x="95.46" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (2 samples, 0.11%)</title><rect x="1142.1" y="609" width="1.2" height="15.0" fill="rgb(230,93,93)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (5 samples, 0.27%)</title><rect x="22.8" y="545" width="3.2" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (2 samples, 0.11%)</title><rect x="12.6" y="497" width="1.2" height="15.0" fill="rgb(234,99,99)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io_schedule_timeout (1 samples, 0.05%)</title><rect x="26.0" y="465" width="0.6" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1136.3" y="161" width="0.6" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="91.8" y="609" width="0.7" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="94.82" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (101 samples, 5.47%)</title><rect x="27.3" y="497" width="64.5" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="30.26" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (2 samples, 0.11%)</title><rect x="1142.1" y="561" width="1.2" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ConstantPool::klass_at_impl (1 samples, 0.05%)</title><rect x="1134.4" y="577" width="0.6" height="15.0" fill="rgb(221,221,66)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="26.6" y="561" width="0.7" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_helper (1 samples, 0.05%)</title><rect x="1134.4" y="481" width="0.6" height="15.0" fill="rgb(229,229,69)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::IWait (6 samples, 0.33%)</title><rect x="1143.3" y="673" width="3.9" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>el0_da (1 samples, 0.05%)</title><rect x="11.9" y="465" width="0.7" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1133.1" y="497" width="0.6" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::wait (2 samples, 0.11%)</title><rect x="1142.1" y="721" width="1.2" height="15.0" fill="rgb(176,176,50)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="731.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>thread_start (1,845 samples, 99.95%)</title><rect x="10.6" y="769" width="1179.4" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="779.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >thread_start</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Unsafe_Park (1,626 samples, 88.08%)</title><rect x="93.7" y="593" width="1039.4" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Unsafe_Park</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (2 samples, 0.11%)</title><rect x="1135.7" y="353" width="1.2" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::lock_without_safepoint_check (1 samples, 0.05%)</title><rect x="1133.1" y="561" width="0.6" height="15.0" fill="rgb(227,227,69)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>jni_invoke_static (5 samples, 0.27%)</title><rect x="10.6" y="705" width="3.2" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_helper (5 samples, 0.27%)</title><rect x="10.6" y="689" width="3.2" height="15.0" fill="rgb(194,194,57)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="10.6" y="577" width="0.7" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__GI___mprotect (2 samples, 0.11%)</title><rect x="1140.1" y="705" width="1.3" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text text-anchor="" x="1143.14" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_virtual (1,637 samples, 88.68%)</title><rect x="93.7" y="657" width="1046.4" height="15.0" fill="rgb(184,184,53)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >JavaCalls::call_virtual</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>java_start (1,840 samples, 99.67%)</title><rect x="13.8" y="737" width="1176.2" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="747.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >java_start</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>stringStream::write (1 samples, 0.05%)</title><rect x="1133.7" y="305" width="0.7" height="15.0" fill="rgb(194,194,56)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_swap_page (1 samples, 0.05%)</title><rect x="26.0" y="561" width="0.6" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ThreadStateTransition::transition_from_native (1 samples, 0.05%)</title><rect x="1136.3" y="273" width="0.6" height="15.0" fill="rgb(200,200,59)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (1 samples, 0.05%)</title><rect x="1136.3" y="193" width="0.6" height="15.0" fill="rgb(181,181,52)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1,625 samples, 88.03%)</title><rect x="94.4" y="465" width="1038.7" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text text-anchor="" x="97.38" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>thread_entry (1,637 samples, 88.68%)</title><rect x="93.7" y="689" width="1046.4" height="15.0" fill="rgb(202,52,52)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >thread_entry</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (2 samples, 0.11%)</title><rect x="1142.1" y="625" width="1.2" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__migration_entry_wait (1 samples, 0.05%)</title><rect x="26.0" y="529" width="0.6" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1,625 samples, 88.03%)</title><rect x="94.4" y="497" width="1038.7" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text text-anchor="" x="97.38" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >futex_wait</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="93.1" y="609" width="0.6" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text text-anchor="" x="96.10" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeCall::get_trampoline (1 samples, 0.05%)</title><rect x="16.4" y="481" width="0.6" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1136.9" y="305" width="0.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="1143.3" y="577" width="0.7" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1,625 samples, 88.03%)</title><rect x="94.4" y="561" width="1038.7" height="15.0" fill="rgb(254,128,128)" rx="2" ry="2" />
+<text text-anchor="" x="97.38" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pthread_cond_wait@@GLIBC_2.17</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::compile_java_method (1 samples, 0.05%)</title><rect x="15.1" y="609" width="0.7" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="1148.5" y="625" width="0.6" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1136.3" y="81" width="0.6" height="15.0" fill="rgb(254,128,128)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (5 samples, 0.27%)</title><rect x="1144.0" y="545" width="3.2" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text text-anchor="" x="1146.98" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rwsem_down_write_failed_killable (2 samples, 0.11%)</title><rect x="1140.1" y="625" width="1.3" height="15.0" fill="rgb(200,51,51)" rx="2" ry="2" />
+<text text-anchor="" x="1143.14" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mem_abort (1 samples, 0.05%)</title><rect x="15.8" y="465" width="0.6" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="15.1" y="449" width="0.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (4 samples, 0.22%)</title><rect x="1137.6" y="433" width="2.5" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1135.7" y="273" width="0.6" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1133.7" y="257" width="0.7" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="92.5" y="545" width="0.6" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text text-anchor="" x="95.46" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="93.1" y="593" width="0.6" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text text-anchor="" x="96.10" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="11.3" y="417" width="0.6" height="15.0" fill="rgb(253,128,128)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_or_compute_monitor_info (1 samples, 0.05%)</title><rect x="11.9" y="513" width="0.7" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="1143.3" y="593" width="0.7" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="10.6" y="481" width="0.7" height="15.0" fill="rgb(213,70,70)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="1136.9" y="417" width="0.7" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_virtual (2 samples, 0.11%)</title><rect x="1135.7" y="465" width="1.2" height="15.0" fill="rgb(194,194,57)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="417" width="0.7" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1147.8" y="609" width="0.7" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text text-anchor="" x="1150.81" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="14.5" y="641" width="0.6" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text text-anchor="" x="17.47" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1141.4" y="545" width="0.7" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (4 samples, 0.22%)</title><rect x="1137.6" y="529" width="2.5" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mem_abort (1 samples, 0.05%)</title><rect x="26.0" y="609" width="0.6" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ObjectSynchronizer::wait (1 samples, 0.05%)</title><rect x="11.9" y="561" width="0.7" height="15.0" fill="rgb(194,194,57)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ciTypeFlow::flow_types (1 samples, 0.05%)</title><rect x="13.8" y="465" width="0.7" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1148.5" y="593" width="0.6" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="91.8" y="561" width="0.7" height="15.0" fill="rgb(204,55,55)" rx="2" ry="2" />
+<text text-anchor="" x="94.82" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="13.8" y="417" width="0.7" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Parse::do_one_bytecode (1 samples, 0.05%)</title><rect x="13.8" y="561" width="0.7" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="11.3" y="529" width="0.6" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (5 samples, 0.27%)</title><rect x="10.6" y="657" width="3.2" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>WatcherThread::run (65 samples, 3.52%)</title><rect x="1148.5" y="721" width="41.5" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="731.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Wat..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="1136.3" y="97" width="0.6" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="481" width="0.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SystemDictionary::load_instance_class (2 samples, 0.11%)</title><rect x="1135.7" y="481" width="1.2" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (2 samples, 0.11%)</title><rect x="12.6" y="401" width="1.2" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ParseGenerator::generate (1 samples, 0.05%)</title><rect x="13.8" y="625" width="0.7" height="15.0" fill="rgb(184,184,53)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (64 samples, 3.47%)</title><rect x="1149.1" y="577" width="40.9" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >fut..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="1133.7" y="289" width="0.7" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (5 samples, 0.27%)</title><rect x="22.8" y="561" width="3.2" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::pd_create_stack_guard_pages (1 samples, 0.05%)</title><rect x="1141.4" y="705" width="0.7" height="15.0" fill="rgb(219,219,66)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeLookup::lookup_entry (1 samples, 0.05%)</title><rect x="1133.7" y="353" width="0.7" height="15.0" fill="rgb(229,229,69)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="15.8" y="401" width="0.6" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_mprotect (2 samples, 0.11%)</title><rect x="1140.1" y="673" width="1.3" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text text-anchor="" x="1143.14" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::ILock (1 samples, 0.05%)</title><rect x="1136.3" y="209" width="0.6" height="15.0" fill="rgb(225,225,68)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="1135.7" y="65" width="0.6" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="11.3" y="449" width="0.6" height="15.0" fill="rgb(210,65,65)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::create_thread (2 samples, 0.11%)</title><rect x="12.6" y="577" width="1.2" height="15.0" fill="rgb(190,190,55)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="1135.7" y="145" width="0.6" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="11.9" y="369" width="0.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1141.4" y="657" width="0.7" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (1 samples, 0.05%)</title><rect x="26.0" y="593" width="0.6" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SystemDictionary::resolve_or_fail (3 samples, 0.16%)</title><rect x="1135.0" y="513" width="1.9" height="15.0" fill="rgb(196,196,57)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SystemDictionary::resolve_instance_class_or_null (1 samples, 0.05%)</title><rect x="1134.4" y="545" width="0.6" height="15.0" fill="rgb(201,201,59)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_timedwait@@GLIBC_2.17 (6 samples, 0.33%)</title><rect x="1143.3" y="641" width="3.9" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeBuffer::relocate_code_to (1 samples, 0.05%)</title><rect x="16.4" y="529" width="0.6" height="15.0" fill="rgb(225,225,68)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::emit_lir (1 samples, 0.05%)</title><rect x="15.1" y="593" width="0.7" height="15.0" fill="rgb(210,210,62)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (5 samples, 0.27%)</title><rect x="1144.0" y="593" width="3.2" height="15.0" fill="rgb(240,109,109)" rx="2" ry="2" />
+<text text-anchor="" x="1146.98" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Unsafe_GetObjectVolatile (1 samples, 0.05%)</title><rect x="1135.7" y="257" width="0.6" height="15.0" fill="rgb(221,81,81)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (5 samples, 0.27%)</title><rect x="1144.0" y="625" width="3.2" height="15.0" fill="rgb(248,119,119)" rx="2" ry="2" />
+<text text-anchor="" x="1146.98" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SystemDictionary::add_loader_constraint (1 samples, 0.05%)</title><rect x="1136.9" y="481" width="0.7" height="15.0" fill="rgb(182,182,52)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_cond_resched (1 samples, 0.05%)</title><rect x="17.0" y="433" width="0.7" height="15.0" fill="rgb(251,124,124)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="1133.1" y="449" width="0.6" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vframe::java_sender (1 samples, 0.05%)</title><rect x="11.9" y="497" width="0.7" height="15.0" fill="rgb(227,227,69)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1,625 samples, 88.03%)</title><rect x="94.4" y="529" width="1038.7" height="15.0" fill="rgb(235,102,102)" rx="2" ry="2" />
+<text text-anchor="" x="97.38" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_futex</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::commit_memory (1 samples, 0.05%)</title><rect x="1141.4" y="689" width="0.7" height="15.0" fill="rgb(227,227,69)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_signal@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="92.5" y="609" width="0.6" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text text-anchor="" x="95.46" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle_mm_fault (1 samples, 0.05%)</title><rect x="26.0" y="577" width="0.6" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (64 samples, 3.47%)</title><rect x="1149.1" y="609" width="40.9" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="92.5" y="593" width="0.6" height="15.0" fill="rgb(250,122,122)" rx="2" ry="2" />
+<text text-anchor="" x="95.46" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (5 samples, 0.27%)</title><rect x="10.6" y="625" width="3.2" height="15.0" fill="rgb(231,96,96)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (5 samples, 0.27%)</title><rect x="10.6" y="641" width="3.2" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compile::Compile (1 samples, 0.05%)</title><rect x="13.8" y="641" width="0.7" height="15.0" fill="rgb(228,228,69)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="26.6" y="545" width="0.7" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="1148.5" y="609" width="0.6" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (101 samples, 5.47%)</title><rect x="27.3" y="577" width="64.5" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text text-anchor="" x="30.26" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_futex</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CHeapObj&lt; (1 samples, 0.05%)</title><rect x="17.0" y="625" width="0.7" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nmethod::nmethod (2 samples, 0.11%)</title><rect x="15.8" y="577" width="1.2" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::wait (1 samples, 0.05%)</title><rect x="1147.2" y="673" width="0.6" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="1147.2" y="561" width="0.6" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Parse::do_one_block (1 samples, 0.05%)</title><rect x="13.8" y="577" width="0.7" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1135.0" y="337" width="0.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="14.5" y="625" width="0.6" height="15.0" fill="rgb(202,52,52)" rx="2" ry="2" />
+<text text-anchor="" x="17.47" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="93.7" y="513" width="0.7" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="1136.9" y="353" width="0.7" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_special (1 samples, 0.05%)</title><rect x="1134.4" y="513" width="0.6" height="15.0" fill="rgb(182,182,52)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Thread::muxAcquire (5 samples, 0.27%)</title><rect x="22.8" y="625" width="3.2" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JVM_StartThread (2 samples, 0.11%)</title><rect x="12.6" y="593" width="1.2" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::lock_without_safepoint_check (1 samples, 0.05%)</title><rect x="1135.7" y="193" width="0.6" height="15.0" fill="rgb(186,186,54)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="1135.0" y="401" width="0.7" height="15.0" fill="rgb(200,51,51)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="577" width="0.7" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rwsem_down_read_failed (1 samples, 0.05%)</title><rect x="16.4" y="385" width="0.6" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__wait_on_bit (1 samples, 0.05%)</title><rect x="26.0" y="497" width="0.6" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mprotect_pkey (2 samples, 0.11%)</title><rect x="1140.1" y="657" width="1.3" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text text-anchor="" x="1143.14" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="26.6" y="529" width="0.7" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1136.9" y="401" width="0.7" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="1136.3" y="177" width="0.6" height="15.0" fill="rgb(253,128,128)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rwsem_down_read_failed (1 samples, 0.05%)</title><rect x="10.0" y="689" width="0.6" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CompileQueue::get (119 samples, 6.45%)</title><rect x="17.7" y="673" width="76.0" height="15.0" fill="rgb(221,221,67)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CompileQ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="10.6" y="433" width="0.7" height="15.0" fill="rgb(248,121,121)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InlineTree::ok_to_inline (1 samples, 0.05%)</title><rect x="13.8" y="513" width="0.7" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (2 samples, 0.11%)</title><rect x="1135.7" y="369" width="1.2" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (8 samples, 0.43%)</title><rect x="17.7" y="593" width="5.1" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="513" width="0.7" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::wait (119 samples, 6.45%)</title><rect x="17.7" y="657" width="76.0" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Monitor:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="1143.3" y="561" width="0.7" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (2 samples, 0.11%)</title><rect x="12.6" y="433" width="1.2" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_pthread_cleanup_push (1 samples, 0.05%)</title><rect x="93.7" y="561" width="0.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>down_read (1 samples, 0.05%)</title><rect x="15.8" y="433" width="0.6" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="15.1" y="465" width="0.7" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="1143.3" y="545" width="0.7" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>task_numa_migrate (1 samples, 0.05%)</title><rect x="17.0" y="481" width="0.7" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>jni_CallStaticVoidMethod (5 samples, 0.27%)</title><rect x="10.6" y="721" width="3.2" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="731.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (4 samples, 0.22%)</title><rect x="1137.6" y="545" width="2.5" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::wait (6 samples, 0.33%)</title><rect x="1143.3" y="689" width="3.9" height="15.0" fill="rgb(227,227,69)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SystemDictionary::validate_protection_domain (1 samples, 0.05%)</title><rect x="1134.4" y="529" width="0.6" height="15.0" fill="rgb(176,176,50)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>preempt_schedule_common (1 samples, 0.05%)</title><rect x="17.0" y="417" width="0.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::ILock (1 samples, 0.05%)</title><rect x="1135.7" y="177" width="0.6" height="15.0" fill="rgb(187,187,54)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (2 samples, 0.11%)</title><rect x="12.6" y="465" width="1.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (2 samples, 0.11%)</title><rect x="1142.1" y="641" width="1.2" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_stub (2 samples, 0.11%)</title><rect x="1135.7" y="417" width="1.2" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="10.6" y="561" width="0.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Relocation::pd_call_destination (1 samples, 0.05%)</title><rect x="16.4" y="497" width="0.6" height="15.0" fill="rgb(205,205,60)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="93.1" y="561" width="0.6" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text text-anchor="" x="96.10" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="11.3" y="497" width="0.6" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="26.6" y="481" width="0.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>WatcherThread::sleep (64 samples, 3.47%)</title><rect x="1149.1" y="705" width="40.9" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Wat..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ciEnv::register_method (2 samples, 0.11%)</title><rect x="15.8" y="609" width="1.2" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (1,846 samples, 100%)</title><rect x="10.0" y="801" width="1180.0" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="811.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (64 samples, 3.47%)</title><rect x="1149.1" y="529" width="40.9" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sch..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>down_write_killable (1 samples, 0.05%)</title><rect x="1141.4" y="593" width="0.7" height="15.0" fill="rgb(254,128,128)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="1136.9" y="369" width="0.7" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_timedwait@@GLIBC_2.17 (102 samples, 5.53%)</title><rect x="26.6" y="609" width="65.2" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pthread..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_malloc (1 samples, 0.05%)</title><rect x="15.8" y="497" width="0.6" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>migrate_task_to (1 samples, 0.05%)</title><rect x="17.0" y="465" width="0.7" height="15.0" fill="rgb(225,86,86)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (2 samples, 0.11%)</title><rect x="12.6" y="513" width="1.2" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (2 samples, 0.11%)</title><rect x="1142.1" y="689" width="1.2" height="15.0" fill="rgb(193,193,56)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (2 samples, 0.11%)</title><rect x="12.6" y="481" width="1.2" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ObjectMonitor::wait (1 samples, 0.05%)</title><rect x="11.3" y="561" width="0.6" height="15.0" fill="rgb(196,196,57)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (5 samples, 0.27%)</title><rect x="22.8" y="609" width="3.2" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>down_write_killable (2 samples, 0.11%)</title><rect x="1140.1" y="641" width="1.3" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text text-anchor="" x="1143.14" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (5 samples, 0.27%)</title><rect x="1144.0" y="529" width="3.2" height="15.0" fill="rgb(254,128,128)" rx="2" ry="2" />
+<text text-anchor="" x="1146.98" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="10.6" y="545" width="0.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_helper (2 samples, 0.11%)</title><rect x="1135.7" y="433" width="1.2" height="15.0" fill="rgb(224,224,68)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1,625 samples, 88.03%)</title><rect x="94.4" y="513" width="1038.7" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text text-anchor="" x="97.38" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_futex</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="1135.0" y="433" width="0.7" height="15.0" fill="rgb(232,96,96)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="11.3" y="465" width="0.6" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="1133.1" y="513" width="0.6" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>wait_on_page_bit (1 samples, 0.05%)</title><rect x="26.0" y="513" width="0.6" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="433" width="0.7" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>EnableBiasedLockingTask::task (1 samples, 0.05%)</title><rect x="1148.5" y="689" width="0.6" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ThreadStateTransition::transition_and_fence (1 samples, 0.05%)</title><rect x="1133.1" y="593" width="0.6" height="15.0" fill="rgb(180,180,52)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>preempt_schedule_common (1 samples, 0.05%)</title><rect x="17.0" y="401" width="0.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ObjArrayKlass::array_klass_impl (1 samples, 0.05%)</title><rect x="10.6" y="497" width="0.7" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (64 samples, 3.47%)</title><rect x="1149.1" y="545" width="40.9" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sch..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (2 samples, 0.11%)</title><rect x="12.6" y="449" width="1.2" height="15.0" fill="rgb(228,90,90)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="11.9" y="385" width="0.7" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compile::call_generator (1 samples, 0.05%)</title><rect x="13.8" y="529" width="0.7" height="15.0" fill="rgb(179,179,51)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::ILock (1 samples, 0.05%)</title><rect x="1136.9" y="449" width="0.7" height="15.0" fill="rgb(180,180,51)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="465" width="0.7" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaThread::thread_main_inner (1,762 samples, 95.45%)</title><rect x="13.8" y="705" width="1126.3" height="15.0" fill="rgb(215,215,64)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >JavaThread::thread_main_inner</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sun/misc/Unsafe:::park (1,626 samples, 88.08%)</title><rect x="93.7" y="609" width="1039.4" height="15.0" fill="rgb(95,241,95)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sun/misc/Unsafe:::park</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1,625 samples, 88.03%)</title><rect x="94.4" y="481" width="1038.7" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text text-anchor="" x="97.38" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >futex_wait_queue_me</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SafepointSynchronize::block (1 samples, 0.05%)</title><rect x="1135.7" y="209" width="0.6" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinkResolver::resolve_virtual_call (1 samples, 0.05%)</title><rect x="1136.9" y="545" width="0.7" height="15.0" fill="rgb(196,196,57)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="26.6" y="513" width="0.7" height="15.0" fill="rgb(204,55,55)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (8 samples, 0.43%)</title><rect x="17.7" y="513" width="5.1" height="15.0" fill="rgb(230,93,93)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1147.8" y="593" width="0.7" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text text-anchor="" x="1150.81" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ObjectSynchronizer::deflate_idle_monitors (1 samples, 0.05%)</title><rect x="1147.8" y="657" width="0.7" height="15.0" fill="rgb(181,181,52)" rx="2" ry="2" />
+<text text-anchor="" x="1150.81" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="1147.8" y="641" width="0.7" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text text-anchor="" x="1150.81" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeBuffer::copy_code_to (1 samples, 0.05%)</title><rect x="16.4" y="545" width="0.6" height="15.0" fill="rgb(196,196,57)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rwsem_down_read_failed (1 samples, 0.05%)</title><rect x="11.9" y="401" width="0.7" height="15.0" fill="rgb(200,51,51)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Parse::do_all_blocks (1 samples, 0.05%)</title><rect x="13.8" y="593" width="0.7" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="91.8" y="545" width="0.7" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text text-anchor="" x="94.82" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__mmap64 (1 samples, 0.05%)</title><rect x="1141.4" y="673" width="0.7" height="15.0" fill="rgb(215,71,71)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sun/misc/Unsafe:::unpark (1 samples, 0.05%)</title><rect x="1133.1" y="609" width="0.6" height="15.0" fill="rgb(103,249,103)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1147.2" y="513" width="0.6" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>el0_da (1 samples, 0.05%)</title><rect x="17.0" y="577" width="0.7" height="15.0" fill="rgb(241,111,111)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (8 samples, 0.43%)</title><rect x="17.7" y="545" width="5.1" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rwsem_down_read_failed (1 samples, 0.05%)</title><rect x="15.1" y="481" width="0.7" height="15.0" fill="rgb(251,124,124)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1143.3" y="609" width="0.7" height="15.0" fill="rgb(242,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="529" width="0.7" height="15.0" fill="rgb(232,96,96)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SafepointSynchronize::do_cleanup_tasks (1 samples, 0.05%)</title><rect x="1147.8" y="673" width="0.7" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text text-anchor="" x="1150.81" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>migration_entry_wait (1 samples, 0.05%)</title><rect x="26.0" y="545" width="0.6" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1135.0" y="321" width="0.7" height="15.0" fill="rgb(241,109,109)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="1134.4" y="385" width="0.6" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_stub (10 samples, 0.54%)</title><rect x="1133.7" y="625" width="6.4" height="15.0" fill="rgb(209,64,64)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>task_numa_fault (1 samples, 0.05%)</title><rect x="17.0" y="513" width="0.7" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1133.1" y="401" width="0.6" height="15.0" fill="rgb(241,109,109)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeLookup::lookup_base (1 samples, 0.05%)</title><rect x="1133.7" y="369" width="0.7" height="15.0" fill="rgb(197,197,58)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="92.5" y="577" width="0.6" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="95.46" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mem_abort (1 samples, 0.05%)</title><rect x="17.0" y="561" width="0.7" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="26.6" y="497" width="0.7" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (5 samples, 0.27%)</title><rect x="22.8" y="513" width="3.2" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc (1 samples, 0.05%)</title><rect x="15.8" y="513" width="0.6" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mem_abort (1 samples, 0.05%)</title><rect x="16.4" y="433" width="0.6" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Java_java_lang_ClassLoader_findBootstrapClass (1 samples, 0.05%)</title><rect x="1136.3" y="305" width="0.6" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ThreadStateTransition::transition_from_native (1 samples, 0.05%)</title><rect x="1135.7" y="241" width="0.6" height="15.0" fill="rgb(228,228,69)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JVM_MonitorWait (2 samples, 0.11%)</title><rect x="11.3" y="577" width="1.3" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="91.8" y="593" width="0.7" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text text-anchor="" x="94.82" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (2 samples, 0.11%)</title><rect x="1140.1" y="689" width="1.3" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text text-anchor="" x="1143.14" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="11.3" y="513" width="0.6" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (5 samples, 0.27%)</title><rect x="22.8" y="577" width="3.2" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InterpreterRuntime::prepare_native_call (1 samples, 0.05%)</title><rect x="1133.7" y="401" width="0.7" height="15.0" fill="rgb(213,213,63)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (2 samples, 0.11%)</title><rect x="1135.7" y="401" width="1.2" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JVM_FindClassFromBootLoader (1 samples, 0.05%)</title><rect x="1136.3" y="289" width="0.6" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="1133.1" y="481" width="0.6" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="1134.4" y="337" width="0.6" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (4 samples, 0.22%)</title><rect x="1137.6" y="449" width="2.5" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaThread::run (1,765 samples, 95.61%)</title><rect x="13.8" y="721" width="1128.3" height="15.0" fill="rgb(207,207,61)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="731.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >JavaThread::run</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle_mm_fault (1 samples, 0.05%)</title><rect x="17.0" y="529" width="0.7" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1143.3" y="513" width="0.7" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="1147.2" y="593" width="0.6" height="15.0" fill="rgb(241,109,109)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="26.0" y="433" width="0.6" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Parse::Parse (1 samples, 0.05%)</title><rect x="13.8" y="609" width="0.7" height="15.0" fill="rgb(189,189,55)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (101 samples, 5.47%)</title><rect x="27.3" y="561" width="64.5" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text text-anchor="" x="30.26" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_futex</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_signal@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="1148.5" y="641" width="0.6" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ConstantPool::klass_ref_at (3 samples, 0.16%)</title><rect x="1135.0" y="545" width="1.9" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaMain (5 samples, 0.27%)</title><rect x="10.6" y="737" width="3.2" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="747.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>java (1,846 samples, 100.00%)</title><rect x="10.0" y="785" width="1180.0" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="795.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >java</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (1 samples, 0.05%)</title><rect x="1134.4" y="401" width="0.6" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinearScan::allocate_registers (1 samples, 0.05%)</title><rect x="15.1" y="561" width="0.7" height="15.0" fill="rgb(180,180,52)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ciTypeFlow::do_flow (1 samples, 0.05%)</title><rect x="13.8" y="481" width="0.7" height="15.0" fill="rgb(178,178,51)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="93.7" y="545" width="0.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Parse::do_call (1 samples, 0.05%)</title><rect x="13.8" y="545" width="0.7" height="15.0" fill="rgb(181,181,52)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rwsem_down_write_failed_killable (1 samples, 0.05%)</title><rect x="1141.4" y="577" width="0.7" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>outputStream::put (1 samples, 0.05%)</title><rect x="1133.7" y="321" width="0.7" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="449" width="0.7" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (1 samples, 0.05%)</title><rect x="15.1" y="513" width="0.7" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (5 samples, 0.27%)</title><rect x="22.8" y="481" width="3.2" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_thread (1,845 samples, 99.95%)</title><rect x="10.6" y="753" width="1179.4" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="763.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >start_thread</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="91.8" y="529" width="0.7" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text text-anchor="" x="94.82" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="91.8" y="577" width="0.7" height="15.0" fill="rgb(237,103,103)" rx="2" ry="2" />
+<text text-anchor="" x="94.82" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="13.8" y="433" width="0.7" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="593" width="0.7" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (5 samples, 0.27%)</title><rect x="22.8" y="593" width="3.2" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="93.7" y="497" width="0.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1136.3" y="65" width="0.6" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>VMThread::loop (8 samples, 0.43%)</title><rect x="1143.3" y="705" width="5.2" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc (1 samples, 0.05%)</title><rect x="17.0" y="593" width="0.7" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="1136.9" y="337" width="0.7" height="15.0" fill="rgb(206,58,58)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Parker::park (4 samples, 0.22%)</title><rect x="1137.6" y="561" width="2.5" height="15.0" fill="rgb(192,192,56)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (5 samples, 0.27%)</title><rect x="1144.0" y="561" width="3.2" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text text-anchor="" x="1146.98" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinkResolver::resolve_invokevirtual (4 samples, 0.22%)</title><rect x="1135.0" y="561" width="2.6" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_virtual (2 samples, 0.11%)</title><rect x="1135.7" y="449" width="1.2" height="15.0" fill="rgb(181,181,52)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1135.7" y="289" width="0.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::malloc (1 samples, 0.05%)</title><rect x="15.8" y="529" width="0.6" height="15.0" fill="rgb(200,200,59)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CallRelocation::fix_relocation_after_move (1 samples, 0.05%)</title><rect x="16.4" y="513" width="0.6" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mangle_name_on (1 samples, 0.05%)</title><rect x="1133.7" y="337" width="0.7" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (1 samples, 0.05%)</title><rect x="15.8" y="449" width="0.6" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinkResolver::linktime_resolve_virtual_method (1 samples, 0.05%)</title><rect x="1136.9" y="529" width="0.7" height="15.0" fill="rgb(177,177,51)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1133.1" y="417" width="0.6" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1143.3" y="529" width="0.7" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (1 samples, 0.05%)</title><rect x="17.0" y="545" width="0.7" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1141.4" y="561" width="0.7" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="1136.3" y="129" width="0.6" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1135.7" y="129" width="0.6" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (2 samples, 0.11%)</title><rect x="12.6" y="529" width="1.2" height="15.0" fill="rgb(213,213,63)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (8 samples, 0.43%)</title><rect x="17.7" y="561" width="5.1" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (64 samples, 3.47%)</title><rect x="1149.1" y="657" width="40.9" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >os:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Unsafe_Park (4 samples, 0.22%)</title><rect x="1137.6" y="577" width="2.5" height="15.0" fill="rgb(206,60,60)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mem_abort (1 samples, 0.05%)</title><rect x="15.1" y="529" width="0.7" height="15.0" fill="rgb(204,57,57)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InterpreterRuntime::_new (1 samples, 0.05%)</title><rect x="1134.4" y="593" width="0.6" height="15.0" fill="rgb(197,197,58)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>VMThread::run (8 samples, 0.43%)</title><rect x="1143.3" y="721" width="5.2" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="731.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1147.2" y="609" width="0.6" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1147.2" y="529" width="0.6" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="26.0" y="417" width="0.6" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (2 samples, 0.11%)</title><rect x="1142.1" y="577" width="1.2" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="545" width="0.7" height="15.0" fill="rgb(251,124,124)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="93.1" y="577" width="0.6" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text text-anchor="" x="96.10" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="1133.1" y="465" width="0.6" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::ILock (1 samples, 0.05%)</title><rect x="1134.4" y="417" width="0.6" height="15.0" fill="rgb(205,205,61)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::lock_without_safepoint_check (1 samples, 0.05%)</title><rect x="1136.3" y="225" width="0.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1134.4" y="369" width="0.6" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (8 samples, 0.43%)</title><rect x="17.7" y="481" width="5.1" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PeriodicTask::real_time_tick (1 samples, 0.05%)</title><rect x="1148.5" y="705" width="0.6" height="15.0" fill="rgb(189,189,55)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="10.0" y="657" width="0.6" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock (1 samples, 0.05%)</title><rect x="93.1" y="625" width="0.6" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text text-anchor="" x="96.10" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_special (1 samples, 0.05%)</title><rect x="1134.4" y="497" width="0.6" height="15.0" fill="rgb(229,229,69)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="26.6" y="577" width="0.7" height="15.0" fill="rgb(200,51,51)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CompileBroker::invoke_compiler_on_method (6 samples, 0.33%)</title><rect x="13.8" y="673" width="3.9" height="15.0" fill="rgb(184,184,53)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (8 samples, 0.43%)</title><rect x="17.7" y="529" width="5.1" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="1147.2" y="577" width="0.6" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vm_mmap_pgoff (1 samples, 0.05%)</title><rect x="1141.4" y="609" width="0.7" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1148.5" y="577" width="0.6" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>java/util/concurrent/locks/LockSupport:::park (4 samples, 0.22%)</title><rect x="1137.6" y="609" width="2.5" height="15.0" fill="rgb(102,248,102)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinearScan::do_linear_scan (1 samples, 0.05%)</title><rect x="15.1" y="577" width="0.7" height="15.0" fill="rgb(186,186,54)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (8 samples, 0.43%)</title><rect x="17.7" y="577" width="5.1" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (2 samples, 0.11%)</title><rect x="1142.1" y="657" width="1.2" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinkResolver::resolve_invoke (4 samples, 0.22%)</title><rect x="1135.0" y="577" width="2.6" height="15.0" fill="rgb(176,176,50)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::wait (64 samples, 3.47%)</title><rect x="1149.1" y="689" width="40.9" height="15.0" fill="rgb(193,193,56)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Mon..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InterpreterRuntime::resolve_invoke (4 samples, 0.22%)</title><rect x="1135.0" y="593" width="2.6" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SafepointSynchronize::block (1 samples, 0.05%)</title><rect x="1136.3" y="241" width="0.6" height="15.0" fill="rgb(183,183,53)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (1 samples, 0.05%)</title><rect x="16.4" y="417" width="0.6" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>numa_migrate_preferred (1 samples, 0.05%)</title><rect x="17.0" y="497" width="0.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (6 samples, 0.33%)</title><rect x="1133.7" y="609" width="3.9" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (5 samples, 0.27%)</title><rect x="10.6" y="609" width="3.2" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1,625 samples, 88.03%)</title><rect x="94.4" y="449" width="1038.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text text-anchor="" x="97.38" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="15.8" y="385" width="0.6" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>el0_da (1 samples, 0.05%)</title><rect x="16.4" y="449" width="0.6" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SystemDictionary::resolve_instance_class_or_null (3 samples, 0.16%)</title><rect x="1135.0" y="497" width="1.9" height="15.0" fill="rgb(181,181,52)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="1136.3" y="145" width="0.6" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::IWait (64 samples, 3.47%)</title><rect x="1149.1" y="673" width="40.9" height="15.0" fill="rgb(228,228,69)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Mon..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (1 samples, 0.05%)</title><rect x="11.9" y="433" width="0.7" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (1 samples, 0.05%)</title><rect x="11.3" y="545" width="0.6" height="15.0" fill="rgb(190,190,55)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (1 samples, 0.05%)</title><rect x="1135.0" y="417" width="0.7" height="15.0" fill="rgb(246,116,116)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SafepointSynchronize::begin (2 samples, 0.11%)</title><rect x="1147.2" y="689" width="1.3" height="15.0" fill="rgb(176,176,50)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1134.4" y="289" width="0.6" height="15.0" fill="rgb(237,105,105)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>revoke_bias (1 samples, 0.05%)</title><rect x="11.9" y="529" width="0.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_timedwait@@GLIBC_2.17 (64 samples, 3.47%)</title><rect x="1149.1" y="641" width="40.9" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pth..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CompileBroker::collect_statistics (1 samples, 0.05%)</title><rect x="14.5" y="657" width="0.6" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text text-anchor="" x="17.47" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="1136.9" y="385" width="0.7" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="14.5" y="593" width="0.6" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text text-anchor="" x="17.47" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InstanceKlass::allocate_objArray (1 samples, 0.05%)</title><rect x="10.6" y="513" width="0.7" height="15.0" fill="rgb(226,226,68)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nmethod::new_nmethod (2 samples, 0.11%)</title><rect x="15.8" y="593" width="1.2" height="15.0" fill="rgb(176,176,50)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeBlob::set_oop_maps (1 samples, 0.05%)</title><rect x="15.8" y="545" width="0.6" height="15.0" fill="rgb(197,197,58)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JVM_GetStackAccessControlContext (1 samples, 0.05%)</title><rect x="10.6" y="529" width="0.7" height="15.0" fill="rgb(235,100,100)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (6 samples, 0.33%)</title><rect x="1143.3" y="657" width="3.9" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text text-anchor="" x="1146.34" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SystemDictionary::check_signature_loaders (1 samples, 0.05%)</title><rect x="1136.9" y="497" width="0.7" height="15.0" fill="rgb(186,186,54)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="13.8" y="401" width="0.7" height="15.0" fill="rgb(235,102,102)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeLookup::lookup (1 samples, 0.05%)</title><rect x="1133.7" y="385" width="0.7" height="15.0" fill="rgb(225,225,68)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="14.5" y="609" width="0.6" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text text-anchor="" x="17.47" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_mmap (1 samples, 0.05%)</title><rect x="1141.4" y="641" width="0.7" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="1135.0" y="353" width="0.7" height="15.0" fill="rgb(202,52,52)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>VMThread::execute (1 samples, 0.05%)</title><rect x="1148.5" y="673" width="0.6" height="15.0" fill="rgb(207,207,61)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>el0_da (1 samples, 0.05%)</title><rect x="10.0" y="753" width="0.6" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="763.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="93.7" y="529" width="0.7" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (64 samples, 3.47%)</title><rect x="1149.1" y="561" width="40.9" height="15.0" fill="rgb(206,58,58)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >fut..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mem_abort (1 samples, 0.05%)</title><rect x="11.9" y="449" width="0.7" height="15.0" fill="rgb(224,86,86)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::IWait (1 samples, 0.05%)</title><rect x="1147.2" y="657" width="0.6" height="15.0" fill="rgb(215,215,64)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LContextSwitchTest$WorkerThread:::run (1,627 samples, 88.14%)</title><rect x="93.7" y="625" width="1040.0" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >LContextSwitchTest$WorkerThread:::run</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_helper (1,637 samples, 88.68%)</title><rect x="93.7" y="641" width="1046.4" height="15.0" fill="rgb(227,227,69)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >JavaCalls::call_helper</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>BiasedLocking::revoke_and_rebias (1 samples, 0.05%)</title><rect x="11.9" y="545" width="0.7" height="15.0" fill="rgb(178,178,51)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="1134.4" y="321" width="0.6" height="15.0" fill="rgb(206,60,60)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeBlob::CodeBlob (2 samples, 0.11%)</title><rect x="15.8" y="561" width="1.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sun/misc/Unsafe:::park (4 samples, 0.22%)</title><rect x="1137.6" y="593" width="2.5" height="15.0" fill="rgb(96,243,96)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="1133.1" y="433" width="0.6" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (64 samples, 3.47%)</title><rect x="1149.1" y="625" width="40.9" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::wait (2 samples, 0.11%)</title><rect x="12.6" y="561" width="1.2" height="15.0" fill="rgb(221,221,66)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>down_read (1 samples, 0.05%)</title><rect x="16.4" y="401" width="0.6" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::ILock (8 samples, 0.43%)</title><rect x="17.7" y="625" width="5.1" height="15.0" fill="rgb(186,186,54)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="1134.4" y="353" width="0.6" height="15.0" fill="rgb(251,124,124)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>down_read (1 samples, 0.05%)</title><rect x="15.1" y="497" width="0.7" height="15.0" fill="rgb(237,103,103)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="91.8" y="497" width="0.7" height="15.0" fill="rgb(217,74,74)" rx="2" ry="2" />
+<text text-anchor="" x="94.82" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>el0_da (1 samples, 0.05%)</title><rect x="15.8" y="481" width="0.6" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="1147.8" y="625" width="0.7" height="15.0" fill="rgb(217,74,74)" rx="2" ry="2" />
+<text text-anchor="" x="1150.81" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (4 samples, 0.22%)</title><rect x="1137.6" y="513" width="2.5" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (3 samples, 0.16%)</title><rect x="10.6" y="593" width="2.0" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (1 samples, 0.05%)</title><rect x="1135.7" y="81" width="0.6" height="15.0" fill="rgb(220,80,80)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="1135.7" y="97" width="0.6" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1135.7" y="49" width="0.6" height="15.0" fill="rgb(225,86,86)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="11.3" y="481" width="0.6" height="15.0" fill="rgb(202,54,54)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JNIHandleBlock::allocate_block (1 samples, 0.05%)</title><rect x="17.0" y="657" width="0.7" height="15.0" fill="rgb(191,191,55)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (101 samples, 5.47%)</title><rect x="27.3" y="529" width="64.5" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text text-anchor="" x="30.26" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >futex_w..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (1 samples, 0.05%)</title><rect x="1135.0" y="449" width="0.7" height="15.0" fill="rgb(179,179,51)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaThread::check_safepoint_and_suspend_for_native_trans (1 samples, 0.05%)</title><rect x="1136.3" y="257" width="0.6" height="15.0" fill="rgb(195,195,57)" rx="2" ry="2" />
+<text text-anchor="" x="1139.31" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ConstantPool::klass_at_impl (3 samples, 0.16%)</title><rect x="1135.0" y="529" width="1.9" height="15.0" fill="rgb(215,215,64)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::ILock (1 samples, 0.05%)</title><rect x="1135.0" y="465" width="0.7" height="15.0" fill="rgb(189,189,55)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 0.05%)</title><rect x="1133.7" y="497" width="0.7" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>el0_da (1 samples, 0.05%)</title><rect x="15.1" y="545" width="0.7" height="15.0" fill="rgb(242,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>el0_da (1 samples, 0.05%)</title><rect x="26.0" y="625" width="0.6" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (101 samples, 5.47%)</title><rect x="27.3" y="513" width="64.5" height="15.0" fill="rgb(206,58,58)" rx="2" ry="2" />
+<text text-anchor="" x="30.26" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rwsem_down_read_failed (1 samples, 0.05%)</title><rect x="15.8" y="417" width="0.6" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="18.75" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::Compilation (3 samples, 0.16%)</title><rect x="15.1" y="641" width="1.9" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinkResolver::resolve_method (1 samples, 0.05%)</title><rect x="1136.9" y="513" width="0.7" height="15.0" fill="rgb(184,184,53)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (1 samples, 0.05%)</title><rect x="1135.7" y="161" width="0.6" height="15.0" fill="rgb(176,176,50)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (5 samples, 0.27%)</title><rect x="1144.0" y="609" width="3.2" height="15.0" fill="rgb(204,55,55)" rx="2" ry="2" />
+<text text-anchor="" x="1146.98" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>C2Compiler::compile_method (1 samples, 0.05%)</title><rect x="13.8" y="657" width="0.7" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mem_abort (1 samples, 0.05%)</title><rect x="10.0" y="737" width="0.6" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="747.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bit_wait_io (1 samples, 0.05%)</title><rect x="26.0" y="481" width="0.6" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text text-anchor="" x="28.98" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Parker::park (1,626 samples, 88.08%)</title><rect x="93.7" y="577" width="1039.4" height="15.0" fill="rgb(194,194,57)" rx="2" ry="2" />
+<text text-anchor="" x="96.74" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Parker::park</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_mmap_pgoff (1 samples, 0.05%)</title><rect x="1141.4" y="625" width="0.7" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text text-anchor="" x="1144.42" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (101 samples, 5.47%)</title><rect x="27.3" y="545" width="64.5" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text text-anchor="" x="30.26" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >futex_w..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="10.6" y="449" width="0.7" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="11.3" y="433" width="0.6" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text text-anchor="" x="14.28" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>stop_one_cpu (1 samples, 0.05%)</title><rect x="17.0" y="449" width="0.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="91.8" y="513" width="0.7" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text text-anchor="" x="94.82" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::lock (1 samples, 0.05%)</title><rect x="1135.0" y="481" width="0.7" height="15.0" fill="rgb(227,227,69)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compiler::compile_method (3 samples, 0.16%)</title><rect x="15.1" y="657" width="1.9" height="15.0" fill="rgb(189,189,55)" rx="2" ry="2" />
+<text text-anchor="" x="18.11" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaThread::check_safepoint_and_suspend_for_native_trans (1 samples, 0.05%)</title><rect x="1135.7" y="225" width="0.6" height="15.0" fill="rgb(210,210,62)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::ILock (1 samples, 0.05%)</title><rect x="1133.1" y="545" width="0.6" height="15.0" fill="rgb(194,194,57)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1134.4" y="273" width="0.6" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__sys_trace_return (101 samples, 5.47%)</title><rect x="27.3" y="593" width="64.5" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text text-anchor="" x="30.26" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__sys_t..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (1 samples, 0.05%)</title><rect x="1133.1" y="529" width="0.6" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SafepointSynchronize::block (1 samples, 0.05%)</title><rect x="1134.4" y="449" width="0.6" height="15.0" fill="rgb(188,188,55)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>work_pending (1 samples, 0.05%)</title><rect x="13.8" y="449" width="0.7" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (1 samples, 0.05%)</title><rect x="1135.7" y="113" width="0.6" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="10.6" y="465" width="0.7" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text text-anchor="" x="13.64" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (5 samples, 0.27%)</title><rect x="1144.0" y="577" width="3.2" height="15.0" fill="rgb(206,60,60)" rx="2" ry="2" />
+<text text-anchor="" x="1146.98" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait (4 samples, 0.22%)</title><rect x="1137.6" y="481" width="2.5" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (1 samples, 0.05%)</title><rect x="1134.4" y="305" width="0.6" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (2 samples, 0.11%)</title><rect x="1140.1" y="609" width="1.3" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text text-anchor="" x="1143.14" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_notify_resume (1 samples, 0.05%)</title><rect x="1133.7" y="273" width="0.7" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (1 samples, 0.05%)</title><rect x="1147.2" y="641" width="0.6" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SystemDictionary::resolve_or_fail (1 samples, 0.05%)</title><rect x="1134.4" y="561" width="0.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ciMethod::get_flow_analysis (1 samples, 0.05%)</title><rect x="13.8" y="497" width="0.7" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::lock (1 samples, 0.05%)</title><rect x="1136.9" y="465" width="0.7" height="15.0" fill="rgb(228,228,69)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (1 samples, 0.05%)</title><rect x="1135.0" y="385" width="0.7" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text text-anchor="" x="1138.03" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="16.4" y="353" width="0.6" height="15.0" fill="rgb(231,96,96)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::malloc (1 samples, 0.05%)</title><rect x="17.0" y="609" width="0.7" height="15.0" fill="rgb(186,186,54)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wait_queue_me (4 samples, 0.22%)</title><rect x="1137.6" y="465" width="2.5" height="15.0" fill="rgb(221,81,81)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>RegisterMap::RegisterMap (1 samples, 0.05%)</title><rect x="11.9" y="481" width="0.7" height="15.0" fill="rgb(225,225,68)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (1 samples, 0.05%)</title><rect x="10.0" y="721" width="0.6" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="731.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1133.7" y="241" width="0.7" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::IWait (119 samples, 6.45%)</title><rect x="17.7" y="641" width="76.0" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="20.67" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Monitor:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::unpark (1 samples, 0.05%)</title><rect x="1148.5" y="657" width="0.6" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text text-anchor="" x="1151.45" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>down_read (1 samples, 0.05%)</title><rect x="11.9" y="417" width="0.7" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text text-anchor="" x="14.92" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__lll_lock_wait (1 samples, 0.05%)</title><rect x="26.6" y="593" width="0.7" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1136.9" y="321" width="0.7" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::lock_without_safepoint_check (1 samples, 0.05%)</title><rect x="1134.4" y="433" width="0.6" height="15.0" fill="rgb(178,178,51)" rx="2" ry="2" />
+<text text-anchor="" x="1137.39" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="16.4" y="369" width="0.6" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (2 samples, 0.11%)</title><rect x="12.6" y="417" width="1.2" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text text-anchor="" x="15.56" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.05%)</title><rect x="1135.7" y="33" width="0.6" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text text-anchor="" x="1138.67" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CHeapObj&lt; (1 samples, 0.05%)</title><rect x="17.0" y="641" width="0.7" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text text-anchor="" x="20.03" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (5 samples, 0.27%)</title><rect x="22.8" y="497" width="3.2" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text text-anchor="" x="25.78" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (2 samples, 0.11%)</title><rect x="1140.1" y="593" width="1.3" height="15.0" fill="rgb(229,93,93)" rx="2" ry="2" />
+<text text-anchor="" x="1143.14" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>down_read (1 samples, 0.05%)</title><rect x="10.0" y="705" width="0.6" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SafepointSynchronize::block (1 samples, 0.05%)</title><rect x="1133.1" y="577" width="0.6" height="15.0" fill="rgb(221,221,66)" rx="2" ry="2" />
+<text text-anchor="" x="1136.11" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (1 samples, 0.05%)</title><rect x="1147.2" y="625" width="0.6" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text text-anchor="" x="1150.17" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::IWait (2 samples, 0.11%)</title><rect x="1142.1" y="705" width="1.2" height="15.0" fill="rgb(178,178,51)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (4 samples, 0.22%)</title><rect x="1137.6" y="497" width="2.5" height="15.0" fill="rgb(210,64,64)" rx="2" ry="2" />
+<text text-anchor="" x="1140.58" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (1 samples, 0.05%)</title><rect x="1136.9" y="433" width="0.7" height="15.0" fill="rgb(226,226,68)" rx="2" ry="2" />
+<text text-anchor="" x="1139.94" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os::PlatformEvent::park (103 samples, 5.58%)</title><rect x="26.6" y="625" width="65.9" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text text-anchor="" x="29.62" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >os::Pla..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_cond_wait@@GLIBC_2.17 (2 samples, 0.11%)</title><rect x="1142.1" y="673" width="1.2" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text text-anchor="" x="1145.06" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeCache::find_blob (1 samples, 0.05%)</title><rect x="16.4" y="465" width="0.6" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text text-anchor="" x="19.39" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (64 samples, 3.47%)</title><rect x="1149.1" y="593" width="40.9" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text text-anchor="" x="1152.09" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CompileBroker::compiler_thread_loop (125 samples, 6.77%)</title><rect x="13.8" y="689" width="79.9" height="15.0" fill="rgb(197,197,58)" rx="2" ry="2" />
+<text text-anchor="" x="16.84" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CompileBr..</text>
+</g>
+</svg>
